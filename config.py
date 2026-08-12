@@ -1,0 +1,3 @@
+BLOCK_SIZE = 512
+
+BATCH_SIZE = 4
