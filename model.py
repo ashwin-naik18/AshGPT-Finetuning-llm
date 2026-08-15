@@ -198,13 +198,15 @@ class GPT(nn.Module):
         loss = None
         
         if y is not None:
+            
+            logits = logits[:, :-1, :]
+            y = y[:, 1:]
+            
             B, T, C = logits.shape
             
-            logits = logits.reshape(B * T, C)
-            
+            logits = logits.reshape(B * T , C)
             y = y.reshape(B * T)
             
             loss = F.cross_entropy(logits, y)
-        
-        return logits, loss
-    
+            
+            return logits, loss
