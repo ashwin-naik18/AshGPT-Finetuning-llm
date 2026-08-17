@@ -88,30 +88,37 @@ result = new_model.load_state_dict(
     strict=False
 )
 
-print("MIssing: ")
-print(result.missing_keys)
+# print("MIssing: ")
+# print(result.missing_keys)
 
-print("Unexpected: ")
-print(result.unexpected_keys)
+# print("Unexpected: ")
+# print(result.unexpected_keys)
 
-print("result")
+# print("result")
 
-print(result)
+# print(result)
 
-print(new_model.position_embedding.weight.shape)
+# print(new_model.position_embedding.weight.shape)
 
-print(new_model.blocks[0]
-      .sa
-      .heads[0]
-      .mask.shape)
+# print(new_model.blocks[0]
+#       .sa
+#       .heads[0]
+#       .mask.shape)
 
 
-x = torch.randint(
-    0, 
-    enc.n_vocab,
-    (2, 512)
+# x = torch.randint(
+#     0, 
+#     enc.n_vocab,
+#     (2, 512)
+# )
+
+# logits, _ = new_model(x)
+
+# print(logits.shape)
+
+torch.save(
+    {
+        "model" : new_model.state_dict()
+    },
+    f"{save_dir}/gpt_512.pt"
 )
-
-logits, _ = new_model(x)
-
-print(logits.shape)

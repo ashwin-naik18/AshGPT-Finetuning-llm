@@ -27,3 +27,5 @@ TRAIN_STEP_PER_CHUNK = 200
 LEARNING_RATE = 3e-4
 
 EVAL_STEPS = 20
+
+save_dir = "/content/drive/MyDrive/SimpleStoriesChunks"
