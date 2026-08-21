@@ -5,7 +5,7 @@ from pathlib import Path
 from torch.nn.utils import clip_grad_norm_
 import time
 from datetime import timedelta
-from dataset import ChunkDataset
+from shard_loader import ShardDataset
 from tokenizer import enc
 from torch.utils.data import DataLoader
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +15,6 @@ from tokenizer import *
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 enabled = device == "cuda"
-
 
 
 def save_checkpoint(
@@ -66,33 +65,56 @@ def load_checkpoint(model, optimiser, filename, scaler, scheduler):
     
 
 
-def estimate_loss(model, val_loader):
+def estimate_loss(model, val_dataset: ShardDataset):
     model.eval()
     
-    losses = torch.zeros(EVAL_STEPS)
+    losses = []
     
-    
-    for i, (x, y) in enumerate(val_loader):
+    for shard_index in val_dataset.get_shard_order():
         
-        x = x.to(device, non_blocking = True)
-        y = y.to(device, non_blocking = True)
+        data = val_dataset.load_shard(
+            shard_index.item()
+        )
         
-        if i >= EVAL_STEPS:
-            break
-        
-        with torch.no_grad():
-            with torch.amp.autocast( device_type = device, enabled = enabled ):
-                
-                _, loss = model(x, y)          
-        
-        losses[i] = loss.item()
+        for x, y in val_dataset.create_batches(
+            data, 
+            BATCH_SIZE
+        ):
+            x = x.to(device, non_blocking = True)
+            y = y.to(device, non_blocking = True)
+            
+            with torch.no_grad():
+                with torch.amp.autocast(
+                    device_type = device,
+                    enabled= enabled
+                ):
+                    _, loss = model(x, y)
+                    
+            losses.append(loss.item())
+            
+            if (len(losses) >= EVAL_STEPS):
+                del data
+                model.train()
+                return sum(losses) / len(losses)
+            
+        del data
         
     model.train()
-    
-    return losses.mean().item()
+    return sum(losses) / len(losses)
+            
+     
+                
 
 def main():
     
+    
+    train_dir = Path("/content/openhermes_chunks/train")
+    val_dir = Path("/content/openhermes_chunks/val")
+    
+    train_dataset = ShardDataset(train_dir)
+    val_dataset = ShardDataset(val_dir)
+    
+        
     executor = ThreadPoolExecutor(max_workers=1)
         
     vocab_size = enc.n_vocab
@@ -112,35 +134,14 @@ def main():
     model = model.to(device)
     
     model = torch.compile(model)
-    
-    chunk_files = sorted(
-            Path(save_dir).glob("chunk_*.pt"),
-            key= lambda p : int(p.stem.split('_')[1])
-        )
-        
-        
-    val_data = torch.load(
-        f"{save_dir}/val_chunk.pt"
-    )
-    
-    val_dataset = ChunkDataset(
-        val_data,
-        BLOCK_SIZE
-    )
-    
-    val_dataset_loader =  DataLoader(
-        val_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        pin_memory=enabled
-    )
+
 
     optimiser = torch.optim.AdamW(
         model.parameters(),
         lr=3e-4
     )
     
-    T_Max = EPOCH * TRAIN_STEP_PER_CHUNK * len(chunk_files)
+    T_Max = EPOCH * TRAIN_STEP_PER_CHUNK * len(train_dataset.shard_files)
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_Max)
     
@@ -167,35 +168,34 @@ def main():
     for epoch in range(start, EPOCH):
         print(f"\nEpoch {epoch+1}/{EPOCH}")
         
+        order = train_dataset.get_shard_order()
+
+        
         future = executor.submit(
-            torch.load,
-            chunk_files[0]
+            train_dataset.load_shard,
+            order[0].item()
         )
         
-        for chunk_idx, chunk in enumerate(chunk_files):
+        for shard_position, shard_index in enumerate(order):
+            
             print(
-                f"Chunk {chunk_idx+1}/{len(chunk_files)}"
+                f"{shard_position + 1} / {len(order)}"
             )
             
             data = future.result()  
             
-            if chunk_idx + 1 < len(chunk_files):
+            if shard_position + 1 < len(order):
                 future = executor.submit(
-                    torch.load,
-                    chunk_files[chunk_idx + 1]
-                )    
-            
-            train_dataset = ChunkDataset(data, BLOCK_SIZE)
-                            
-            train_dataloader = DataLoader(
-                train_dataset,
-                batch_size=BATCH_SIZE,
-                shuffle=True,
-                pin_memory=enabled
-            )
+                    train_dataset.load_shard,
+                    order[shard_position +  1].item()
+                )
                 
+            data = train_dataset.shuffle_shard(data)
             
-            for step, (x, y) in enumerate(train_dataloader): 
+            
+            for step, (x, y) in enumerate(
+                train_dataset.create_batches(data, BATCH_SIZE)
+            ): 
                 
                 if step >= TRAIN_STEP_PER_CHUNK:
                     break
@@ -203,12 +203,12 @@ def main():
                 x = x.to(device, non_blocking = True)
                 y = y.to(device, non_blocking = True)      
                 
+                optimiser.zero_grad(set_to_none=True)
                 
-                with torch.amp.autocast(device_type=device, enabled=enabled) :
+                with torch.amp.autocast( device_type = device, enabled = enabled) :
                                     
                     _, loss = model(x, y)
                 
-                optimiser.zero_grad(set_to_none=True)
                 
                 scaler.scale(loss).backward()
                 
@@ -223,8 +223,8 @@ def main():
                 scheduler.step()
                 
                 completed_steps = (
-                    epoch * len(chunk_files) * TRAIN_STEP_PER_CHUNK
-                    + chunk_idx * TRAIN_STEP_PER_CHUNK
+                    epoch * len(order) * TRAIN_STEP_PER_CHUNK
+                    + shard_position * TRAIN_STEP_PER_CHUNK
                     + step
                 )
                 
@@ -233,7 +233,7 @@ def main():
 
                     time_per_step = elapsed / (completed_steps + 1)
                     
-                    total_steps =  EPOCH * TRAIN_STEP_PER_CHUNK * len(chunk_files)
+                    total_steps =  EPOCH * TRAIN_STEP_PER_CHUNK * len(order)
 
                     remaining_steps = total_steps - completed_steps - 1
 
@@ -254,12 +254,10 @@ def main():
                     print("=" * 50)                    
                      
                     
-            del train_dataloader
-            del train_dataset
             del data
             
             
-        val_loss = estimate_loss(model, val_dataset_loader)
+        val_loss = estimate_loss(model, val_dataset)
         
         print(f"Validation Loss : {val_loss:.4f}")                    
 

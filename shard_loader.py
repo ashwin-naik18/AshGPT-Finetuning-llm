@@ -45,7 +45,7 @@ class ShardDataset:
         
         for i in range(0, len(input_ids), batch_size):
             input_batch = input_ids[i: i + batch_size]
-            label_batch = input_ids[i: i + batch_size]
+            label_batch = label[i: i + batch_size]
             
             if len(input_batch) < batch_size:
                 break
