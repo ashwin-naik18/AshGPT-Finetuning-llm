@@ -210,3 +210,5 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits, y)
             
             return logits, loss
+
+        return logits, loss

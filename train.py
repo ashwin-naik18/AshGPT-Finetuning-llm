@@ -29,7 +29,7 @@ def save_checkpoint(
         "scheduler" : scheduler.state_dict()
     }
     
-    torch.save(status, f"{save_dir}/best_model.pt")
+    torch.save(status, f"{save_dir}/best_512_model.pt")
     
     print("Best Model Saved successfully..")
 
@@ -108,8 +108,8 @@ def estimate_loss(model, val_dataset: ShardDataset):
 def main():
     
     
-    train_dir = Path("/content/openhermes_chunks/train")
-    val_dir = Path("/content/openhermes_chunks/val")
+    train_dir = Path(TRAIN_DIR)
+    val_dir = Path(VAL_DIR)
     
     train_dataset = ShardDataset(train_dir)
     val_dataset = ShardDataset(val_dir)
